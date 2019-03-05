@@ -153,7 +153,7 @@ bool emptyPcrSections(TPML_PCR_SELECTION *s)
     return true;
 }
 
-int extendPcrs()
+int extendPcrs(int extend_all_flag, TPMI_ALG_HASH algId)
 {
     TPML_PCR_SELECTION pcrSelectionIn;
     TPML_PCR_SELECTION pcrSelectionOut;
@@ -186,16 +186,32 @@ int extendPcrs()
     *( (UINT8 *)((void *)&sessionData.sessionAttributes ) ) = 0;
 
     // Init digests
-    digests.count = g_banks.count;
-    for(int i = 0; i < g_banks.count; i++)
+    if(extend_all_flag == 1)
     {
-        digests.digests[i].hashAlg = g_banks.alg[i];
+        digests.count = g_banks.count;
+    }
+    else
+    {
+        digests.count = 1;
+    }
+
+    for(int i = 0; i < digests.count; i++)
+    {
+        if(extend_all_flag == 1)
+        {
+            digests.digests[i].hashAlg = g_banks.alg[i];
+        }
+        else
+        {
+            digests.digests[i].hashAlg = algId;
+        }
+
         digestSize = GetDigestSize( digests.digests[i].hashAlg );
 
         // Fill a hash value to max-sized buffer
-	memset(digests.digests[i].digest.sha512, 0, digestSize);
-	memcpy((char*)digests.digests[i].digest.sha512, deadbeef, sizeof(deadbeef));
-    }
+        memset( digests.digests[i].digest.sha512, 0, digestSize );
+        memcpy( (char*)digests.digests[i].digest.sha512, deadbeef, sizeof(deadbeef) );
+    } 
 
     sessionsData.cmdAuthsCount = 1;
     sessionsData.cmdAuths[0] = &sessionData;
@@ -204,7 +220,7 @@ int extendPcrs()
     do
     {
         // Skip DRTM-related PCRs.
-        if ( (g_pcrs.count >= 17) && (g_pcrs.count <= 22))
+        if( (g_pcrs.count >= 17) && (g_pcrs.count <= 22))
         {
             continue;
         }
@@ -340,7 +356,7 @@ int showPcrValues()
 
 int extendAllPcrs()
 {
-    if(extendPcrs())
+    if(extendPcrs(1, 0))
         return -1;
 
     return 0;
@@ -365,6 +381,14 @@ int showSelectedPcrValues()
         return -1;
 
     if(showPcrValues())
+        return -1;
+
+    return 0;
+}
+
+int extendAlgPcrs(TPMI_ALG_HASH algId)
+{
+    if(extendPcrs(0, algId))
         return -1;
 
     return 0;
@@ -422,6 +446,7 @@ void showHelp(const char *name)
     printf("\n%s  [options]\n"
             "-h, --help                Display command tool usage info;\n"
             "-v, --version             Display command tool version info;\n"
+            "-g, --algorithim <hexAlg>     The algorithm id, optional\n"
             "-p, --port    <port number>   The Port number, default is %d, optional\n"
             "-d, --debugLevel <0|1|2|3>    The level of debug message, default is 0, optional\n"
                 "\t0 (high level test results)\n"
@@ -433,7 +458,9 @@ void showHelp(const char *name)
             "    %s -h\n"
             "display version:\n"
             "    %s -v\n"
-            , name, DEFAULT_RESMGR_TPM_PORT, name, name  );
+            "extend the PCR values with specified bank:\n"
+            "    %s -g 0x04 or 0x0b\n"
+            , name, DEFAULT_RESMGR_TPM_PORT, name, name, name  );
 }
 
 const char *findChar(const char *str, int len, char c)
@@ -573,6 +600,7 @@ int main(int argc, char *argv[])
     static struct option long_options[] = {
         {"help",0,NULL,'h'},
         {"version",0,NULL,'v'},
+        {"algorithm",1,NULL,'g'},
         {"port",1,NULL,'p'},
         {"debugLevel",1,NULL,'d'},
         {0,0,0,0}
@@ -583,7 +611,8 @@ int main(int argc, char *argv[])
     int returnVal = 0;
     int flagCnt = 0;
     int h_flag = 0,
-        v_flag = 0;
+        v_flag = 0,
+        g_flag = 0;
 
     while((opt = getopt_long(argc,argv,optstring,long_options,NULL)) != -1)
     {
@@ -594,6 +623,15 @@ int main(int argc, char *argv[])
             break;
         case 'v':
             v_flag = 1;
+            break;
+         case 'g':
+            if(getSizeUint16Hex(optarg,&algorithmId) != 0)
+            {
+                showArgError(optarg, argv[0]);
+                returnVal = -1;
+                break;
+            }
+            g_flag = 1;
             break;
         case 'p':
             if( getPort(optarg, &port) )
@@ -628,7 +666,7 @@ int main(int argc, char *argv[])
 
     if(returnVal != 0)
         return returnVal;
-    flagCnt = h_flag + v_flag;
+    flagCnt = h_flag + v_flag + g_flag;
 
     if(flagCnt > 1)
     {
@@ -652,8 +690,16 @@ int main(int argc, char *argv[])
     returnVal = getBanks();
     if(returnVal == 0)
     {
-        returnVal = extendAllPcrs();
-        returnVal |= showAllPcrsValues();
+        if(g_flag)
+        {
+            returnVal = extendAlgPcrs(algorithmId);
+            returnVal |= showAlgPcrValues(algorithmId);
+        }
+        else
+        {
+            returnVal = extendAllPcrs();
+            returnVal |= showAllPcrsValues();
+        }
     }
 
     finishTest();
