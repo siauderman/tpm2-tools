@@ -103,6 +103,8 @@ HASH_SIZE_INFO   hashSizes[] = {
     {TPM_ALG_NULL,0}
 };
 
+#define MAX_HASH_BUFFER         64
+
 
 int GetDigestSize( TPM_ALG_ID authHash )
 {
@@ -153,7 +155,7 @@ bool emptyPcrSections(TPML_PCR_SELECTION *s)
     return true;
 }
 
-int extendPcrs(int extend_all_flag, TPMI_ALG_HASH algId)
+int extendPcrs(int extend_all_flag, TPMI_ALG_HASH algId, unsigned int PCR_index, unsigned char* hash_buffer)
 {
     TPML_PCR_SELECTION pcrSelectionIn;
     TPML_PCR_SELECTION pcrSelectionOut;
@@ -166,7 +168,6 @@ int extendPcrs(int extend_all_flag, TPMI_ALG_HASH algId)
     TPML_DIGEST pcrValues;
     TPML_DIGEST_VALUES digests;
     int digestSize;
-    char deadbeef[] = {0xd, 0xe, 0xa, 0xd, 0xb, 0xe, 0xe, 0xf};
  
     TPMS_AUTH_COMMAND *sessionDataArray[1];
 
@@ -210,31 +211,43 @@ int extendPcrs(int extend_all_flag, TPMI_ALG_HASH algId)
 
         // Fill a hash value to max-sized buffer
         memset( digests.digests[i].digest.sha512, 0, digestSize );
-        memcpy( (char*)digests.digests[i].digest.sha512, deadbeef, sizeof(deadbeef) );
+        memcpy( (char*)digests.digests[i].digest.sha512, hash_buffer, digestSize );
     } 
 
     sessionsData.cmdAuthsCount = 1;
     sessionsData.cmdAuths[0] = &sessionData;
 
-    g_pcrs.count = 0;
-    do
+    if (PCR_index != -1)
     {
-        // Skip DRTM-related PCRs.
-        if( (g_pcrs.count >= 17) && (g_pcrs.count <= 22))
-        {
-            continue;
-        }
-        rval = Tss2_Sys_PCR_Extend( sysContext, g_pcrs.count, &sessionsData, 
+        rval = Tss2_Sys_PCR_Extend( sysContext, PCR_index, &sessionsData,
 			&digests, 0 );
         if(rval != TPM_RC_SUCCESS )
         {
             printf("read pcr failed. tpm error 0x%0x\n\n", rval);
             return -1;
         }
+    }
+    else
+    {
+        g_pcrs.count = 0;
+        do
+        {
+            // Skip DRTM-related PCRs.
+            if( (g_pcrs.count >= 17) && (g_pcrs.count <= 22))
+            {
+                continue;
+            }
+            rval = Tss2_Sys_PCR_Extend( sysContext, g_pcrs.count, &sessionsData,
+                &digests, 0 );
+            if(rval != TPM_RC_SUCCESS )
+            {
+                printf("read pcr failed. tpm error 0x%0x\n\n", rval);
+                return -1;
+            }
 
-    //4. goto step 2 if pcrSelctionIn still has bits set
-    } while(++g_pcrs.count < 24);
-
+        //4. goto step 2 if pcrSelctionIn still has bits set
+        } while(++g_pcrs.count < 24);
+    }
     return 0;
 }
 
@@ -354,9 +367,9 @@ int showPcrValues()
     return 0;
 }
 
-int extendAllPcrs()
+int extendAllPcrs(unsigned int PCR_index, unsigned char* hash_buffer)
 {
-    if(extendPcrs(1, 0))
+    if(extendPcrs(1, 0, PCR_index, hash_buffer))
         return -1;
 
     return 0;
@@ -386,9 +399,9 @@ int showSelectedPcrValues()
     return 0;
 }
 
-int extendAlgPcrs(TPMI_ALG_HASH algId)
+int extendAlgPcrs(TPMI_ALG_HASH algId, unsigned int PCR_index, unsigned char* hash_buffer)
 {
-    if(extendPcrs(0, algId))
+    if(extendPcrs(0, algId, PCR_index, hash_buffer))
         return -1;
 
     return 0;
@@ -444,23 +457,25 @@ void showBanks()
 void showHelp(const char *name)
 {
     printf("\n%s  [options]\n"
-            "-h, --help                Display command tool usage info;\n"
-            "-v, --version             Display command tool version info;\n"
-            "-g, --algorithim <hexAlg>     The algorithm id, optional\n"
-            "-p, --port    <port number>   The Port number, default is %d, optional\n"
-            "-d, --debugLevel <0|1|2|3>    The level of debug message, default is 0, optional\n"
-                "\t0 (high level test results)\n"
-                "\t1 (test app send/receive byte streams)\n"
-                "\t2 (resource manager send/receive byte streams)\n"
-                "\t3 (resource manager tables)\n"
-            "\n\tExample:\n"
-            "display usage:\n"
-            "    %s -h\n"
-            "display version:\n"
-            "    %s -v\n"
-            "extend the PCR values with specified bank:\n"
-            "    %s -g 0x04 or 0x0b\n"
-            , name, DEFAULT_RESMGR_TPM_PORT, name, name, name  );
+           "-h, --help                Display command tool usage info;\n"
+           "-v, --version             Display command tool version info;\n"
+           "-g, --algorithim <hexAlg>     The algorithm id, optional\n"
+           "-p, --port    <port number>   The Port number, default is %d, optional\n"
+           "-i, --hash input <hex_byte_string>   The hex string, default is all zeros, optional\n"
+           "-P, --PCR index <number>      The PCR index, default is all pcrs, optional\n"
+           "-d, --debugLevel <0|1|2|3>    The level of debug message, default is 0, optional\n"
+           "\t0 (high level test results)\n"
+           "\t1 (test app send/receive byte streams)\n"
+           "\t2 (resource manager send/receive byte streams)\n"
+           "\t3 (resource manager tables)\n"
+           "\n\tExample:\n"
+           "display usage:\n"
+           "    %s -h\n"
+           "display version:\n"
+           "    %s -v\n"
+           "extend the PCR values to PCR 0 with specified bank:\n"
+           "    %s -g 0x04 or 0x0b -i 0123456789ABCDEF -P 0\n",
+           name, DEFAULT_RESMGR_TPM_PORT, name, name, name);
 }
 
 const char *findChar(const char *str, int len, char c)
@@ -587,32 +602,95 @@ int parsePCRSelections(const char *arg, TPML_PCR_SELECTION *pcrSels)
     return 0;
 }
 
+int int_from_hex_value(int hex)
+{
+    int data;
+    int ret;
+
+    data = toupper(hex);
+    if (('A' <= data) && (data <= 'F'))
+    {
+        ret = data - 'A' + 10;
+    }
+    else if(('0' <= data) && (data <= '9'))
+    {
+        ret = data - '0';
+    }
+    else
+    {
+        ret = -1;
+    }
+
+    return ret;
+}
+
+int get_data_from_hex_string(char* hex_string, unsigned char* hash_buffer)
+{
+    int len;
+    int i;
+    int data;
+
+    memset(hash_buffer, 0, MAX_HASH_BUFFER);
+
+    len = strlen(hex_string);
+    if (len > MAX_HASH_BUFFER * 2)
+    {
+        len = MAX_HASH_BUFFER * 2;
+    }
+
+    for(i = 0; i < len; i++)
+    {
+        data = int_from_hex_value((int)hex_string[i]);
+
+        if (data == -1)
+        {
+            return -1;
+        }
+
+        if((i % 2) == 0)
+        {
+            hash_buffer[i/2] = data << 4;
+        }
+        else
+        {
+            hash_buffer[i/2] |= data;
+        }
+    }
+
+    return 0;
+}
+
 int main(int argc, char *argv[])
 {
     char hostName[200] = DEFAULT_HOSTNAME;
     int port = DEFAULT_RESMGR_TPM_PORT;
+    unsigned int PCR_index = -1;
 
     setbuf(stdout, NULL);
     setvbuf (stdout, NULL, _IONBF, BUFSIZ);
 
     int opt = -1;
-    const char *optstring = "hvg:p:d:o:L:s";
+    const char *optstring = "hvg:p:i:P:d:";
     static struct option long_options[] = {
         {"help",0,NULL,'h'},
         {"version",0,NULL,'v'},
         {"algorithm",1,NULL,'g'},
         {"port",1,NULL,'p'},
+        {"hash_input",1,NULL,'i'},
+        {"PCR_Index", 1, NULL, 'P'},
         {"debugLevel",1,NULL,'d'},
         {0,0,0,0}
     };
 
     TPMI_ALG_HASH algorithmId;
+    unsigned char hash_buffer[MAX_HASH_BUFFER] = {0xde, 0xad, 0xbe, 0xef, 0};
 
     int returnVal = 0;
     int flagCnt = 0;
     int h_flag = 0,
         v_flag = 0,
-        g_flag = 0;
+        g_flag = 0,
+        P_flag = 0;
 
     while((opt = getopt_long(argc,argv,optstring,long_options,NULL)) != -1)
     {
@@ -639,6 +717,23 @@ int main(int argc, char *argv[])
                 printf("Incorrect port number.\n");
                 returnVal = -3;
             }
+            break;
+        case 'i':
+            printf("%s\n", optarg);
+            if (get_data_from_hex_string(optarg, hash_buffer) != 0)
+            {
+                printf("Incorrect data format.\nex)abcdef012345...\n");
+                exit(-1);
+            }
+            break;
+        case 'P':
+            if(getSizeUint32(optarg, &PCR_index))
+            {
+                printf("Incorrect data format.\nex) 0 or 1 ... 23\n");
+                exit(-1);
+            }
+            P_flag = 1;
+            printf("PCR Num %d\n", PCR_index);
             break;
         case 'd':
             if( getDebugLevel(optarg, &debugLevel) )
@@ -692,12 +787,12 @@ int main(int argc, char *argv[])
     {
         if(g_flag)
         {
-            returnVal = extendAlgPcrs(algorithmId);
+            returnVal = extendAlgPcrs(algorithmId, PCR_index, hash_buffer);
             returnVal |= showAlgPcrValues(algorithmId);
         }
         else
         {
-            returnVal = extendAllPcrs();
+            returnVal = extendAllPcrs(PCR_index, hash_buffer);
             returnVal |= showAllPcrsValues();
         }
     }
